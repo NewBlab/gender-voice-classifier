@@ -1,0 +1,1 @@
+streamlit\nlibrosa\nscikit-learn\nsoundfile\nnumpy
