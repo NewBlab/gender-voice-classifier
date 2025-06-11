@@ -62,13 +62,10 @@ class AudioProcessor:
                 self.pitch = pitch
                 self.mfcc = mfcc
 
-                if pitch > 50:
-                    label = kmeans.predict(features.reshape(1, -1))[0]
-                    center_pitches = [c[0] for c in kmeans.cluster_centers_]
-                    male_label = np.argmin(center_pitches)
-                    gender = "Male" if label == male_label else "Female"
-                else:
-                    gender = "Silent/Unclear"
+                label = kmeans.predict(features.reshape(1, -1))[0]
+                center_pitches = [c[0] for c in kmeans.cluster_centers_]
+                male_label = np.argmin(center_pitches)
+                gender = "Male" if label == male_label else "Female"
 
                 self.result = (gender, pitch)
             except Exception as e:
@@ -90,6 +87,7 @@ energy_box = st.empty()
 waveform_box = st.empty()
 mfcc_box = st.empty()
 chart_box = st.empty()
+debug_box = st.empty()
 
 if ctx.audio_processor:
     while ctx.state.playing:
@@ -104,9 +102,7 @@ if ctx.audio_processor:
         if result:
             gender, pitch = result
             pitch_box.markdown(f"**Pitch:** `{pitch:.2f} Hz`")
-
-            # Always store the result, even if Silent or Error
-            past_predictions.append(gender)
+            debug_box.markdown(f"**Debug:** Pitch = `{pitch:.2f}`, Energy = `{energy:.6f}`, Gender = `{gender}`")
 
             if gender == "Silent/Unclear":
                 gender_box.warning("🎤 Speak louder or closer to the mic...")
@@ -114,10 +110,10 @@ if ctx.audio_processor:
                 gender_box.error("⚠️ Error during prediction.")
             else:
                 gender_box.success(f"🧑 Predicted Gender: **{gender}**")
+                past_predictions.append(gender)
         else:
             gender_box.info("⏳ Listening... Please speak.")
 
-        # Waveform
         if waveform is not None:
             fig1, ax1 = plt.subplots(figsize=(6, 2))
             ax1.plot(waveform)
@@ -126,20 +122,16 @@ if ctx.audio_processor:
             ax1.set_ylabel("Amplitude")
             waveform_box.pyplot(fig1)
 
-        # MFCCs
         if mfcc is not None:
             fig2, ax2 = plt.subplots(figsize=(6, 3))
             librosa.display.specshow(mfcc, sr=44100, x_axis='time', ax=ax2)
             ax2.set_title("MFCCs")
             mfcc_box.pyplot(fig2)
 
-        # Gender count chart
-
-       # Gender count chart with 'Unclear'
         male_count = sum(1 for g in past_predictions if g == "Male")
         female_count = sum(1 for g in past_predictions if g == "Female")
         unclear_count = sum(1 for g in past_predictions if g == "Silent/Unclear")
-        
+
         fig3, ax3 = plt.subplots()
         ax3.bar(["Male", "Female", "Unclear"], [male_count, female_count, unclear_count],
                 color=['blue', 'pink', 'gray'])
@@ -147,6 +139,5 @@ if ctx.audio_processor:
         ax3.set_ylabel("Count (last 30 samples)")
         ax3.set_title("Gender Prediction History")
         chart_box.pyplot(fig3)
-
 
         time.sleep(1)
