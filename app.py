@@ -105,15 +105,15 @@ if ctx.audio_processor:
             gender, pitch = result
             pitch_box.markdown(f"**Pitch:** `{pitch:.2f} Hz`")
 
-        if gender == "Silent/Unclear":
-            gender_box.warning("🎤 Speak louder or closer to the mic...")
-        elif gender == "Error":
-            gender_box.error("⚠️ Error during prediction.")
-        else:
-            gender_box.success(f"🧑 Predicted Gender: **{gender}**")
-
+            # Always store the result, even if Silent or Error
             past_predictions.append(gender)
 
+            if gender == "Silent/Unclear":
+                gender_box.warning("🎤 Speak louder or closer to the mic...")
+            elif gender == "Error":
+                gender_box.error("⚠️ Error during prediction.")
+            else:
+                gender_box.success(f"🧑 Predicted Gender: **{gender}**")
         else:
             gender_box.info("⏳ Listening... Please speak.")
 
