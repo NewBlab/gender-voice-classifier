@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import numpy as np
 import librosa
 from sklearn.cluster import KMeans
@@ -8,11 +9,30 @@ import matplotlib.pyplot as plt
 import librosa.display
 from collections import deque
 
-# ── Page Setup ────────────────────────────────────────────────────────────────
+# ── 1) MIC DIAGNOSTIC HTML ────────────────────────────────────────────────────
+components.html("""
+<!DOCTYPE html>
+<html>
+  <body>
+    <div id="mic-status">Mic test: <em>pending…</em></div>
+    <script>
+      navigator.mediaDevices.getUserMedia({audio:true})
+        .then(stream => {
+          document.getElementById('mic-status').innerText = 'Mic test: OK 🎤';
+          stream.getTracks().forEach(t => t.stop());
+        })
+        .catch(err => {
+          document.getElementById('mic-status').innerText = 'Mic test: FAILED – ' + err.message;
+        });
+    </script>
+  </body>
+</html>
+""", height=60)
+
+# ── 2) PAGE SETUP ─────────────────────────────────────────────────────────────
 st.set_page_config(layout="centered")
 st.title("🎙️ In-Browser Gender Detection")
 
-# ── Session State Initialization ──────────────────────────────────────────────
 ss = st.session_state
 if "is_recording" not in ss:
     ss.is_recording = False
@@ -25,10 +45,10 @@ if "last_waveform" not in ss:
 if "last_mfcc" not in ss:
     ss.last_mfcc = None
 
-# ── Dummy KMeans Model on Pitch+MFCC Means ────────────────────────────────────
+# ── 3) DUMMY KMEANS ───────────────────────────────────────────────────────────
 def train_dummy_kmeans():
     feats = []
-    for base in [110, 120, 125, 210, 220, 230]:
+    for base in [110,120,125,210,220,230]:
         feats.append([base] + list(np.random.randn(13)))
     return KMeans(n_clusters=2, random_state=0).fit(feats)
 
@@ -36,31 +56,30 @@ kmeans = train_dummy_kmeans()
 centers = [c[0] for c in kmeans.cluster_centers_]
 male_label = int(np.argmin(centers))
 
-# ── Feature Extraction Helpers ────────────────────────────────────────────────
+# ── 4) FEATURE EXTRACTORS ─────────────────────────────────────────────────────
 def extract_pitch(y, sr):
     autoc = np.correlate(y, y, mode="full")[len(y):]
     d = np.diff(autoc)
-    idx = np.where(d > 0)[0]
+    idx = np.where(d>0)[0]
     if not idx.size:
         return 0
     peak = np.argmax(autoc[idx[0]:]) + idx[0]
-    return sr / peak if peak > 0 else 0
+    return sr/peak if peak>0 else 0
 
 def extract_mfcc(y, sr):
     return librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
 
-# ── AudioRecorder: Collects Frames When Recording ─────────────────────────────
+# ── 5) AUDIO RECORDER ─────────────────────────────────────────────────────────
 class AudioRecorder:
     def __init__(self):
         self.buffer = []
-
     def recv(self, frame: av.AudioFrame):
-        samples = frame.to_ndarray().flatten().astype(np.float32) / 32768.0
+        samples = frame.to_ndarray().flatten().astype(np.float32)/32768.0
         if ss.is_recording:
             self.buffer.append(samples)
         return frame
 
-# ── Start WebRTC Stream ────────────────────────────────────────────────────────
+# ── 6) START WEBRTC ───────────────────────────────────────────────────────────
 ctx = webrtc_streamer(
     key="recorder",
     mode=WebRtcMode.SENDONLY,
@@ -68,16 +87,16 @@ ctx = webrtc_streamer(
     media_stream_constraints={"audio": True, "video": False},
 )
 
-# ── Mic Status & Energy ───────────────────────────────────────────────────────
+# ── 7) MIC ENERGY METER ───────────────────────────────────────────────────────
 playing = ctx.state.playing
-st.text(f"WebRTC playing? {playing}")
+st.text(f"WebRTC active? {playing}")
 energy = 0.0
 if ctx.audio_processor and ctx.audio_processor.buffer:
     last = ctx.audio_processor.buffer[-1]
     energy = float(np.mean(last**2))
 st.metric("Mic energy", f"{energy:.6f}")
 
-# ── Control Buttons ───────────────────────────────────────────────────────────
+# ── 8) CONTROL BUTTONS ────────────────────────────────────────────────────────
 col1, col2 = st.columns(2)
 with col1:
     if not ss.is_recording and st.button("Start Recording"):
@@ -87,23 +106,19 @@ with col1:
 with col2:
     if ss.is_recording and st.button("Stop & Analyze"):
         ss.is_recording = False
-        # concatenate and clear buffer
-        buf = (
-            np.concatenate(ctx.audio_processor.buffer)
-            if ctx.audio_processor and ctx.audio_processor.buffer
-            else np.array([])
-        )
-        if ctx.audio_processor:
-            ctx.audio_processor.buffer.clear()
-
-        # require ≥0.5s of audio
-        if buf.size > 44100 * 0.5:
+        # gather buffer
+        rec = ctx.audio_processor
+        buf = np.concatenate(rec.buffer) if rec and rec.buffer else np.array([])
+        if rec:
+            rec.buffer.clear()
+        # require ≥0.5s
+        if buf.size > 44100*0.5:
             sr = 44100
             pitch = extract_pitch(buf, sr)
             mfcc = extract_mfcc(buf, sr)
             feat = [pitch] + list(np.mean(mfcc, axis=1))
             label = kmeans.predict([feat])[0]
-            gender = "Male" if label == male_label else "Female"
+            gender = "Male" if label==male_label else "Female"
             ss.last_result = (gender, pitch)
             ss.last_waveform = buf
             ss.last_mfcc = mfcc
@@ -111,35 +126,31 @@ with col2:
         else:
             ss.last_result = ("Too short", 0)
 
-# ── Display Results ───────────────────────────────────────────────────────────
+# ── 9) SHOW RESULTS ───────────────────────────────────────────────────────────
 if ss.last_result:
     gender, pitch = ss.last_result
-    if gender in ("Male", "Female"):
-        st.success(f"🧑 Predicted Gender: **{gender}** — 🎵 Pitch: **{pitch:.1f} Hz**")
+    if gender in ("Male","Female"):
+        st.success(f"🧑 Predicted Gender: **{gender}** — 🎵 {pitch:.1f} Hz")
     else:
         st.warning(gender)
-
+    # waveform
     if ss.last_waveform is not None:
-        fig1, ax1 = plt.subplots(figsize=(6, 2))
+        fig1,ax1 = plt.subplots(figsize=(6,2))
         ax1.plot(ss.last_waveform)
-        ax1.set(title="Waveform", xlabel="Sample #", ylabel="Amplitude")
+        ax1.set(title="Waveform", xlabel="Sample", ylabel="Amplitude")
         st.pyplot(fig1)
-
+    # mfcc
     if ss.last_mfcc is not None:
-        fig2, ax2 = plt.subplots(figsize=(6, 3))
-        librosa.display.specshow(ss.last_mfcc, sr=sr, x_axis="time", ax=ax2)
+        fig2,ax2 = plt.subplots(figsize=(6,3))
+        librosa.display.specshow(ss.last_mfcc, sr=44100, x_axis="time", ax=ax2)
         ax2.set(title="MFCCs")
         st.pyplot(fig2)
 
-# ── Prediction History Chart ─────────────────────────────────────────────────
+# ── 10) HISTORY CHART ─────────────────────────────────────────────────────────
 hist = list(ss.history)
-male_count = hist.count("Male")
-female_count = hist.count("Female")
-short_count = hist.count("Too short")
-
-fig3, ax3 = plt.subplots()
-ax3.bar(["Male", "Female", "Too short"], [male_count, female_count, short_count],
-        color=["blue", "pink", "gray"])
-ax3.set_ylim(0, 30)
+counts = [hist.count("Male"), hist.count("Female"), hist.count("Too short")]
+fig3,ax3 = plt.subplots()
+ax3.bar(["Male","Female","Short"], counts, color=["blue","pink","gray"])
+ax3.set_ylim(0,30)
 ax3.set(title="Last 30 Predictions", ylabel="Count")
 st.pyplot(fig3)
