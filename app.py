@@ -132,6 +132,7 @@ if ctx.audio_processor:
             mfcc_box.pyplot(fig2)
 
         # Gender count chart
+
         male_count = sum(1 for g in past_predictions if g == "Male")
         female_count = sum(1 for g in past_predictions if g == "Female")
 
