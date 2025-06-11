@@ -3,5 +3,5 @@ librosa
 scikit-learn
 soundfile
 numpy
-pydub
 streamlit-webrtc
+matplotlib
