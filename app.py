@@ -68,9 +68,17 @@ ctx = webrtc_streamer(
     media_stream_constraints={"audio": True, "video": False},
 )
 
+import time
+
+placeholder = st.empty()
+
 if ctx.audio_processor:
-    result = ctx.audio_processor.result
-    if result:
-        gender, pitch = result
-        st.markdown(f"**Predicted Gender:** {gender}")
-        st.markdown(f"**Pitch:** {pitch:.2f} Hz")
+    while ctx.state.playing:
+        result = ctx.audio_processor.result
+        if result:
+            gender, pitch = result
+            placeholder.markdown(f"**Predicted Gender:** {gender}")
+            placeholder.markdown(f"**Pitch:** {pitch:.2f} Hz")
+        else:
+            placeholder.markdown("*Listening...*")
+        time.sleep(1)
