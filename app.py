@@ -33,10 +33,13 @@ def extract_pitch(signal, sr):
     autocorr = np.correlate(signal, signal, mode='full')
     autocorr = autocorr[len(autocorr)//2:]
     d = np.diff(autocorr)
-    start = np.nonzero(d > 0)[0][0]
-    peak = np.argmax(autocorr[start:]) + start
-    pitch = sr / peak
-    return pitch
+    try:
+        start = np.nonzero(d > 0)[0][0]
+        peak = np.argmax(autocorr[start:]) + start
+        pitch = sr / peak
+        return pitch
+    except Exception:
+        return 0
 
 def extract_features(audio_np, sr):
     pitch = extract_pitch(audio_np, sr)
@@ -56,12 +59,15 @@ class AudioProcessor:
         if len(samples) > sr // 2:
             try:
                 features = extract_features(samples, sr).reshape(1, -1)
-                label = kmeans.predict(features)[0]
-                center_pitches = [c[0] for c in kmeans.cluster_centers_]
-                male_label = np.argmin(center_pitches)
-                gender = "Male" if label == male_label else "Female"
-                pitch = features[0][0]
-                self.result = (gender, pitch)
+                if features[0][0] > 50:  # only classify if pitch is valid
+                    label = kmeans.predict(features)[0]
+                    center_pitches = [c[0] for c in kmeans.cluster_centers_]
+                    male_label = np.argmin(center_pitches)
+                    gender = "Male" if label == male_label else "Female"
+                    pitch = features[0][0]
+                    self.result = (gender, pitch)
+                else:
+                    self.result = ("Silent/Unclear", 0)
             except Exception as e:
                 self.result = ("Error", 0)
         return frame
