@@ -1,5 +1,7 @@
 import streamlit as st
-import streamlit.components.v1 as components
+# Page config MUST be first
+st.set_page_config(layout="centered")
+
 import numpy as np
 import librosa
 from sklearn.cluster import KMeans
@@ -8,8 +10,9 @@ import av
 import matplotlib.pyplot as plt
 import librosa.display
 from collections import deque
+import streamlit.components.v1 as components
 
-# ── 1) MIC DIAGNOSTIC HTML ────────────────────────────────────────────────────
+# --- Mic diagnostic HTML ---
 components.html("""
 <!DOCTYPE html>
 <html>
@@ -29,23 +32,25 @@ components.html("""
 </html>
 """, height=60)
 
-# ── 2) PAGE SETUP ─────────────────────────────────────────────────────────────
-st.set_page_config(layout="centered")
 st.title("🎙️ In-Browser Gender Detection")
 
+# Session state init
 ss = st.session_state
-if "is_recording" not in ss:
+if 'is_recording' not in ss:
     ss.is_recording = False
-if "history" not in ss:
+if 'history' not in ss:
     ss.history = deque(maxlen=30)
-if "last_result" not in ss:
+if 'last_result' not in ss:
     ss.last_result = None
-if "last_waveform" not in ss:
+if 'last_waveform' not in ss:
     ss.last_waveform = None
-if "last_mfcc" not in ss:
+if 'last_mfcc' not in ss:
     ss.last_mfcc = None
 
-# ── 3) DUMMY KMEANS ───────────────────────────────────────────────────────────
+# Dummy KMeans model
+from sklearn.cluster import KMeans
+import numpy as np
+
 def train_dummy_kmeans():
     feats = []
     for base in [110,120,125,210,220,230]:
@@ -56,7 +61,10 @@ kmeans = train_dummy_kmeans()
 centers = [c[0] for c in kmeans.cluster_centers_]
 male_label = int(np.argmin(centers))
 
-# ── 4) FEATURE EXTRACTORS ─────────────────────────────────────────────────────
+# Feature extraction
+import numpy as np
+import librosa
+
 def extract_pitch(y, sr):
     autoc = np.correlate(y, y, mode="full")[len(y):]
     d = np.diff(autoc)
@@ -69,25 +77,27 @@ def extract_pitch(y, sr):
 def extract_mfcc(y, sr):
     return librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
 
-# ── 5) AUDIO RECORDER ─────────────────────────────────────────────────────────
-class AudioRecorder:
-    def __init__(self):
-        self.buffer = []
-    def recv(self, frame: av.AudioFrame):
-        samples = frame.to_ndarray().flatten().astype(np.float32)/32768.0
-        if ss.is_recording:
-            self.buffer.append(samples)
-        return frame
+# AudioRecorder
+def AudioRecorderFactory():
+    class AudioRecorder:
+        def __init__(self):
+            self.buffer = []
+        def recv(self, frame: av.AudioFrame):
+            arr = frame.to_ndarray().flatten().astype(np.float32)/32768.0
+            if ss.is_recording:
+                self.buffer.append(arr)
+            return frame
+    return AudioRecorder
 
-# ── 6) START WEBRTC ───────────────────────────────────────────────────────────
+# Start WebRTC
 ctx = webrtc_streamer(
-    key="recorder",
+    key='recorder',
     mode=WebRtcMode.SENDONLY,
-    audio_processor_factory=AudioRecorder,
+    audio_processor_factory=AudioRecorderFactory,
     media_stream_constraints={"audio": True, "video": False},
 )
 
-# ── 7) MIC ENERGY METER ───────────────────────────────────────────────────────
+# Mic energy meter
 playing = ctx.state.playing
 st.text(f"WebRTC active? {playing}")
 energy = 0.0
@@ -96,7 +106,7 @@ if ctx.audio_processor and ctx.audio_processor.buffer:
     energy = float(np.mean(last**2))
 st.metric("Mic energy", f"{energy:.6f}")
 
-# ── 8) CONTROL BUTTONS ────────────────────────────────────────────────────────
+# Controls
 col1, col2 = st.columns(2)
 with col1:
     if not ss.is_recording and st.button("Start Recording"):
@@ -106,19 +116,17 @@ with col1:
 with col2:
     if ss.is_recording and st.button("Stop & Analyze"):
         ss.is_recording = False
-        # gather buffer
         rec = ctx.audio_processor
         buf = np.concatenate(rec.buffer) if rec and rec.buffer else np.array([])
         if rec:
             rec.buffer.clear()
-        # require ≥0.5s
-        if buf.size > 44100*0.5:
-            sr = 44100
+        if buf.size > 44100 * 0.5:
+            sr=44100
             pitch = extract_pitch(buf, sr)
             mfcc = extract_mfcc(buf, sr)
-            feat = [pitch] + list(np.mean(mfcc, axis=1))
-            label = kmeans.predict([feat])[0]
-            gender = "Male" if label==male_label else "Female"
+            feat=[pitch]+list(np.mean(mfcc, axis=1))
+            label=kmeans.predict([feat])[0]
+            gender="Male" if label==male_label else "Female"
             ss.last_result = (gender, pitch)
             ss.last_waveform = buf
             ss.last_mfcc = mfcc
@@ -126,31 +134,29 @@ with col2:
         else:
             ss.last_result = ("Too short", 0)
 
-# ── 9) SHOW RESULTS ───────────────────────────────────────────────────────────
+# Display
 if ss.last_result:
     gender, pitch = ss.last_result
     if gender in ("Male","Female"):
         st.success(f"🧑 Predicted Gender: **{gender}** — 🎵 {pitch:.1f} Hz")
     else:
         st.warning(gender)
-    # waveform
     if ss.last_waveform is not None:
-        fig1,ax1 = plt.subplots(figsize=(6,2))
-        ax1.plot(ss.last_waveform)
-        ax1.set(title="Waveform", xlabel="Sample", ylabel="Amplitude")
-        st.pyplot(fig1)
-    # mfcc
+        fig, ax = plt.subplots(figsize=(6,2))
+        ax.plot(ss.last_waveform)
+        ax.set(title="Waveform", xlabel="Sample", ylabel="Amplitude")
+        st.pyplot(fig)
     if ss.last_mfcc is not None:
-        fig2,ax2 = plt.subplots(figsize=(6,3))
-        librosa.display.specshow(ss.last_mfcc, sr=44100, x_axis="time", ax=ax2)
+        fig2, ax2 = plt.subplots(figsize=(6,3))
+        librosa.display.specshow(ss.last_mfcc, sr=sr, x_axis='time', ax=ax2)
         ax2.set(title="MFCCs")
         st.pyplot(fig2)
 
-# ── 10) HISTORY CHART ─────────────────────────────────────────────────────────
-hist = list(ss.history)
-counts = [hist.count("Male"), hist.count("Female"), hist.count("Too short")]
-fig3,ax3 = plt.subplots()
-ax3.bar(["Male","Female","Short"], counts, color=["blue","pink","gray"])
+# History chart
+hist=list(ss.history)
+counts=[hist.count("Male"), hist.count("Female"), hist.count("Too short")]
+fig3,ax3=plt.subplots()
+ax3.bar(["Male","Female","Too short"], counts, color=["blue","pink","gray"])
 ax3.set_ylim(0,30)
-ax3.set(title="Last 30 Predictions", ylabel="Count")
+ax3.set(title="Last 30",ylabel="Count")
 st.pyplot(fig3)
