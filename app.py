@@ -105,13 +105,15 @@ if ctx.audio_processor:
             gender, pitch = result
             pitch_box.markdown(f"**Pitch:** `{pitch:.2f} Hz`")
 
-            if gender == "Silent/Unclear":
-                gender_box.warning("🎤 Speak louder or closer to the mic...")
-            elif gender == "Error":
-                gender_box.error("⚠️ Error during prediction.")
-            else:
-                gender_box.success(f"🧑 Predicted Gender: **{gender}**")
-                past_predictions.append(gender)
+        if gender == "Silent/Unclear":
+            gender_box.warning("🎤 Speak louder or closer to the mic...")
+        elif gender == "Error":
+            gender_box.error("⚠️ Error during prediction.")
+        else:
+            gender_box.success(f"🧑 Predicted Gender: **{gender}**")
+
+past_predictions.append(gender)
+
         else:
             gender_box.info("⏳ Listening... Please speak.")
 
@@ -133,14 +135,18 @@ if ctx.audio_processor:
 
         # Gender count chart
 
+       # Gender count chart with 'Unclear'
         male_count = sum(1 for g in past_predictions if g == "Male")
         female_count = sum(1 for g in past_predictions if g == "Female")
-
+        unclear_count = sum(1 for g in past_predictions if g == "Silent/Unclear")
+        
         fig3, ax3 = plt.subplots()
-        ax3.bar(["Male", "Female"], [male_count, female_count], color=['blue', 'pink'])
+        ax3.bar(["Male", "Female", "Unclear"], [male_count, female_count, unclear_count],
+                color=['blue', 'pink', 'gray'])
         ax3.set_ylim(0, 30)
         ax3.set_ylabel("Count (last 30 samples)")
         ax3.set_title("Gender Prediction History")
         chart_box.pyplot(fig3)
+
 
         time.sleep(1)
