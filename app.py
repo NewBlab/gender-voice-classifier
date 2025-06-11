@@ -5,13 +5,26 @@ from sklearn.cluster import KMeans
 from streamlit_webrtc import webrtc_streamer, WebRtcMode
 import av
 import matplotlib.pyplot as plt
+import librosa.display
 from collections import deque
-import time
+import threading
 
 st.set_page_config(layout="centered")
 st.title("🎙️ Real-Time Gender Detection")
 
-# KMeans on dummy pitch+MFCCs
+# --- Global shared state ---
+if 'past_predictions' not in st.session_state:
+    st.session_state.past_predictions = deque(maxlen=30)
+if 'last_result' not in st.session_state:
+    st.session_state.last_result = None
+if 'waveform' not in st.session_state:
+    st.session_state.waveform = None
+if 'mfcc' not in st.session_state:
+    st.session_state.mfcc = None
+if 'energy' not in st.session_state:
+    st.session_state.energy = 0
+
+# --- Dummy KMeans ---
 sample_features = [
     [110] + list(np.random.normal(0, 1, 13)),
     [120] + list(np.random.normal(0, 1, 13)),
@@ -21,26 +34,26 @@ sample_features = [
     [230] + list(np.random.normal(0, 1, 13)),
 ]
 kmeans = KMeans(n_clusters=2, random_state=0).fit(sample_features)
-past_predictions = deque(maxlen=30)
 
+# --- Audio Feature Extraction ---
 def extract_pitch(signal, sr):
-    autocorr = np.correlate(signal, signal, mode='full')[len(signal):]
+    autocorr = np.correlate(signal, signal, mode='full')
+    autocorr = autocorr[len(autocorr)//2:]
     d = np.diff(autocorr)
-    start = np.nonzero(d > 0)[0][0]
-    peak = np.argmax(autocorr[start:]) + start
-    return sr / peak if peak > 0 else 0
+    try:
+        start = np.nonzero(d > 0)[0][0]
+        peak = np.argmax(autocorr[start:]) + start
+        return sr / peak
+    except Exception:
+        return 0
 
 def extract_features(audio_np, sr):
     pitch = extract_pitch(audio_np, sr)
     mfcc = librosa.feature.mfcc(y=audio_np, sr=sr, n_mfcc=13)
-    return np.hstack(([pitch], np.mean(mfcc, axis=1))), pitch
+    mfcc_mean = np.mean(mfcc, axis=1)
+    return np.hstack(([pitch], mfcc_mean)), pitch, mfcc
 
-# Shared state
-if "gender_result" not in st.session_state:
-    st.session_state["gender_result"] = None
-    st.session_state["pitch"] = 0
-    st.session_state["energy"] = 0
-
+# --- Audio Processor ---
 class AudioProcessor:
     def recv(self, frame: av.AudioFrame):
         samples = frame.to_ndarray().flatten().astype(np.float32) / 32768.0
@@ -48,21 +61,25 @@ class AudioProcessor:
         energy = np.mean(samples**2)
 
         if len(samples) > sr // 2:
-            features, pitch = extract_features(samples, sr)
-            label = kmeans.predict([features])[0]
-            center_pitches = [c[0] for c in kmeans.cluster_centers_]
-            gender = "Male" if label == np.argmin(center_pitches) else "Female"
-        else:
-            gender = "Silent"
+            try:
+                features, pitch, mfcc = extract_features(samples, sr)
+                label = kmeans.predict(features.reshape(1, -1))[0]
+                center_pitches = [c[0] for c in kmeans.cluster_centers_]
+                male_label = np.argmin(center_pitches)
+                gender = "Male" if label == male_label else "Female"
+            except:
+                gender = "Unclear"
+                pitch = 0
 
-        # update state
-        st.session_state["gender_result"] = gender
-        st.session_state["pitch"] = pitch
-        st.session_state["energy"] = energy
+            st.session_state.last_result = (gender, pitch)
+            st.session_state.energy = energy
+            st.session_state.waveform = samples
+            st.session_state.mfcc = mfcc
+            st.session_state.past_predictions.append(gender)
 
         return frame
 
-# Streamlit UI
+# --- Start Stream ---
 ctx = webrtc_streamer(
     key="gender",
     mode=WebRtcMode.SENDONLY,
@@ -70,33 +87,41 @@ ctx = webrtc_streamer(
     media_stream_constraints={"audio": True, "video": False},
 )
 
-gender_box = st.empty()
-pitch_box = st.empty()
-energy_box = st.empty()
-chart_box = st.empty()
+# --- Visuals ---
+if ctx.state.playing:
+    st.markdown(f"**🎚️ Mic Energy Level:** `{st.session_state.energy:.6f}`")
 
-# live render loop
-while ctx.state.playing:
-    gender = st.session_state["gender_result"]
-    pitch = st.session_state["pitch"]
-    energy = st.session_state["energy"]
+    result = st.session_state.last_result
+    if result:
+        gender, pitch = result
+        st.markdown(f"**Pitch:** `{pitch:.2f} Hz`")
+        if gender == "Unclear":
+            st.warning("🎤 Speak louder or closer to the mic...")
+        else:
+            st.success(f"🧑 Predicted Gender: **{gender}**")
 
-    if gender:
-        gender_box.markdown(f"**🧑 Gender:** `{gender}`")
-        pitch_box.markdown(f"🎵 Pitch: `{pitch:.2f}` Hz")
-        energy_box.markdown(f"🎚️ Energy: `{energy:.6f}`")
+    # --- Waveform ---
+    if st.session_state.waveform is not None:
+        fig1, ax1 = plt.subplots(figsize=(6, 2))
+        ax1.plot(st.session_state.waveform)
+        ax1.set_title("Waveform")
+        waveform_box = st.pyplot(fig1)
 
-        past_predictions.append(gender)
+    # --- MFCCs ---
+    if st.session_state.mfcc is not None:
+        fig2, ax2 = plt.subplots(figsize=(6, 3))
+        librosa.display.specshow(st.session_state.mfcc, sr=44100, x_axis='time', ax=ax2)
+        ax2.set_title("MFCCs")
+        mfcc_box = st.pyplot(fig2)
 
-        # Chart
-        male_count = sum(1 for g in past_predictions if g == "Male")
-        female_count = sum(1 for g in past_predictions if g == "Female")
-        silent_count = sum(1 for g in past_predictions if g == "Silent")
+    # --- History Chart ---
+    male = sum(1 for g in st.session_state.past_predictions if g == "Male")
+    female = sum(1 for g in st.session_state.past_predictions if g == "Female")
+    unclear = sum(1 for g in st.session_state.past_predictions if g == "Unclear")
 
-        fig, ax = plt.subplots()
-        ax.bar(["Male", "Female", "Silent"], [male_count, female_count, silent_count])
-        ax.set_ylim(0, 30)
-        ax.set_title("Gender Prediction History")
-        chart_box.pyplot(fig)
-
-    time.sleep(1)
+    fig3, ax3 = plt.subplots()
+    ax3.bar(["Male", "Female", "Unclear"], [male, female, unclear], color=['blue', 'pink', 'gray'])
+    ax3.set_ylim(0, 30)
+    ax3.set_ylabel("Count (last 30 samples)")
+    ax3.set_title("Gender Prediction History")
+    chart_box = st.pyplot(fig3)
