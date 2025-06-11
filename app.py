@@ -22,8 +22,6 @@ sample_features = [
 
 kmeans = KMeans(n_clusters=2, random_state=0).fit(sample_features)
 
-# Feature extraction
-
 def extract_pitch(signal, sr):
     autocorr = np.correlate(signal, signal, mode='full')
     autocorr = autocorr[len(autocorr)//2:]
@@ -42,7 +40,6 @@ def extract_features(audio_np, sr):
     mfcc_mean = np.mean(mfcc, axis=1)
     return np.hstack(([pitch], mfcc_mean)), pitch, mfcc
 
-# AudioProcessor for streamlit-webrtc
 class AudioProcessor:
     def __init__(self):
         self.result = None
@@ -53,22 +50,25 @@ class AudioProcessor:
     def recv(self, frame: av.AudioFrame):
         samples = frame.to_ndarray().flatten().astype(np.float32) / 32768.0
         sr = frame.sample_rate
+        print(f"[DEBUG] Received frame: {len(samples)} samples at {sr} Hz")
 
         if len(samples) > sr // 2:
             try:
                 features, pitch, mfcc = extract_features(samples, sr)
+                print(f"[DEBUG] Pitch: {pitch:.2f} Hz")
                 if features[0] > 50:
                     label = kmeans.predict(features.reshape(1, -1))[0]
                     center_pitches = [c[0] for c in kmeans.cluster_centers_]
                     male_label = np.argmin(center_pitches)
                     gender = "Male" if label == male_label else "Female"
                     self.result = (gender, pitch)
-                    self.waveform = samples
-                    self.pitch = pitch
-                    self.mfcc = mfcc
                 else:
-                    self.result = ("Silent/Unclear", 0)
-            except Exception:
+                    self.result = ("Silent/Unclear", pitch)
+                self.waveform = samples
+                self.pitch = pitch
+                self.mfcc = mfcc
+            except Exception as e:
+                print(f"[ERROR] {e}")
                 self.result = ("Error", 0)
         return frame
 
@@ -79,8 +79,11 @@ ctx = webrtc_streamer(
     media_stream_constraints={"audio": True, "video": False},
 )
 
-placeholder = st.empty()
-chart_placeholder = st.empty()
+status = st.empty()
+gender_box = st.empty()
+pitch_box = st.empty()
+waveform_box = st.empty()
+mfcc_box = st.empty()
 
 if ctx.audio_processor:
     while ctx.state.playing:
@@ -90,25 +93,26 @@ if ctx.audio_processor:
 
         if result:
             gender, pitch = result
-            placeholder.markdown(f"**Predicted Gender:** {gender}")
-            placeholder.markdown(f"**Pitch:** {pitch:.2f} Hz")
-
-            # Plot waveform
-            if waveform is not None:
-                fig, ax = plt.subplots(figsize=(5, 2))
-                ax.plot(waveform)
-                ax.set_title("Waveform")
-                ax.set_xlabel("Time")
-                ax.set_ylabel("Amplitude")
-                chart_placeholder.pyplot(fig)
-
-            # Plot MFCCs
-            if mfcc is not None:
-                fig2, ax2 = plt.subplots(figsize=(5, 3))
-                librosa.display.specshow(mfcc, x_axis='time', ax=ax2)
-                ax2.set_title("MFCC")
-                ax2.set_ylabel("MFCC Coefficients")
-                chart_placeholder.pyplot(fig2)
+            gender_box.markdown(f"### 🧑 Predicted Gender: **{gender}**")
+            pitch_box.markdown(f"**🎚 Pitch:** {pitch:.2f} Hz")
         else:
-            placeholder.markdown("*Listening...*")
+            status.markdown("⏳ Listening...")
+
+        # Waveform visualization
+        if waveform is not None:
+            fig, ax = plt.subplots(figsize=(6, 2))
+            ax.plot(waveform)
+            ax.set_title("Waveform")
+            ax.set_xlabel("Sample")
+            ax.set_ylabel("Amplitude")
+            waveform_box.pyplot(fig)
+
+        # MFCC visualization
+        if mfcc is not None:
+            fig2, ax2 = plt.subplots(figsize=(6, 3))
+            librosa.display.specshow(mfcc, x_axis='time', ax=ax2, sr=44100)
+            ax2.set_title("MFCCs")
+            ax2.set_ylabel("MFCC Coefficients")
+            mfcc_box.pyplot(fig2)
+
         time.sleep(1)
