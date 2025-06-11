@@ -3,5 +3,5 @@ librosa
 scikit-learn
 soundfile
 numpy
-streamlit-audio-recorder
 pydub
+streamlit-webrtc
