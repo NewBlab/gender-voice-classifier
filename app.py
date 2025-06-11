@@ -2,18 +2,10 @@ import streamlit as st
 import numpy as np
 import librosa
 from sklearn.cluster import KMeans
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, ClientSettings
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
 import av
-import soundfile as sf
-import tempfile
 
 st.title("🎙️ Real-Time Gender Detection from Microphone")
-
-# WebRTC settings
-client_settings = ClientSettings(
-    media_stream_constraints={"audio": True, "video": False},
-    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-)
 
 # Dummy sample features for clustering
 sample_features = [
@@ -26,8 +18,6 @@ sample_features = [
 ]
 
 kmeans = KMeans(n_clusters=2, random_state=0).fit(sample_features)
-
-# Feature extraction
 
 def extract_pitch(signal, sr):
     autocorr = np.correlate(signal, signal, mode='full')
@@ -47,7 +37,6 @@ def extract_features(audio_np, sr):
     mfcc_mean = np.mean(mfcc, axis=1)
     return np.hstack(([pitch], mfcc_mean))
 
-# AudioProcessor for streamlit-webrtc
 class AudioProcessor:
     def __init__(self):
         self.result = None
@@ -59,7 +48,7 @@ class AudioProcessor:
         if len(samples) > sr // 2:
             try:
                 features = extract_features(samples, sr).reshape(1, -1)
-                if features[0][0] > 50:  # only classify if pitch is valid
+                if features[0][0] > 50:
                     label = kmeans.predict(features)[0]
                     center_pitches = [c[0] for c in kmeans.cluster_centers_]
                     male_label = np.argmin(center_pitches)
@@ -68,20 +57,17 @@ class AudioProcessor:
                     self.result = (gender, pitch)
                 else:
                     self.result = ("Silent/Unclear", 0)
-            except Exception as e:
+            except Exception:
                 self.result = ("Error", 0)
         return frame
 
-# Stream audio
 ctx = webrtc_streamer(
     key="gender-detector",
     mode=WebRtcMode.SENDONLY,
-    client_settings=client_settings,
     audio_processor_factory=AudioProcessor,
     media_stream_constraints={"audio": True, "video": False},
 )
 
-# Show result
 if ctx.audio_processor:
     result = ctx.audio_processor.result
     if result:
