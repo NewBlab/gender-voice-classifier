@@ -10,7 +10,6 @@ import time
 st.set_page_config(layout="centered")
 st.title("🎙️ Real-Time Gender Detection from Microphone")
 
-# Dummy sample features for clustering
 sample_features = [
     [110] + list(np.random.normal(0, 1, 13)),
     [120] + list(np.random.normal(0, 1, 13)),
@@ -21,6 +20,7 @@ sample_features = [
 ]
 
 kmeans = KMeans(n_clusters=2, random_state=0).fit(sample_features)
+
 
 def extract_pitch(signal, sr):
     autocorr = np.correlate(signal, signal, mode='full')
@@ -34,11 +34,13 @@ def extract_pitch(signal, sr):
     except Exception:
         return 0
 
+
 def extract_features(audio_np, sr):
     pitch = extract_pitch(audio_np, sr)
     mfcc = librosa.feature.mfcc(y=audio_np, sr=sr, n_mfcc=13)
     mfcc_mean = np.mean(mfcc, axis=1)
     return np.hstack(([pitch], mfcc_mean)), pitch, mfcc
+
 
 class AudioProcessor:
     def __init__(self):
@@ -46,16 +48,16 @@ class AudioProcessor:
         self.waveform = None
         self.pitch = 0
         self.mfcc = None
+        self.energy = 0
 
     def recv(self, frame: av.AudioFrame):
         samples = frame.to_ndarray().flatten().astype(np.float32) / 32768.0
         sr = frame.sample_rate
-        print(f"[DEBUG] Received frame: {len(samples)} samples at {sr} Hz")
+        self.energy = np.mean(samples ** 2)
 
         if len(samples) > sr // 2:
             try:
                 features, pitch, mfcc = extract_features(samples, sr)
-                print(f"[DEBUG] Pitch: {pitch:.2f} Hz")
                 if features[0] > 50:
                     label = kmeans.predict(features.reshape(1, -1))[0]
                     center_pitches = [c[0] for c in kmeans.cluster_centers_]
@@ -68,9 +70,9 @@ class AudioProcessor:
                 self.pitch = pitch
                 self.mfcc = mfcc
             except Exception as e:
-                print(f"[ERROR] {e}")
                 self.result = ("Error", 0)
         return frame
+
 
 ctx = webrtc_streamer(
     key="gender-detector",
@@ -82,6 +84,7 @@ ctx = webrtc_streamer(
 status = st.empty()
 gender_box = st.empty()
 pitch_box = st.empty()
+energy_box = st.empty()
 waveform_box = st.empty()
 mfcc_box = st.empty()
 
@@ -90,6 +93,9 @@ if ctx.audio_processor:
         result = ctx.audio_processor.result
         waveform = ctx.audio_processor.waveform
         mfcc = ctx.audio_processor.mfcc
+        energy = ctx.audio_processor.energy
+
+        energy_box.markdown(f"**🔊 Mic Energy Level:** {energy:.6f}")
 
         if result:
             gender, pitch = result
@@ -98,7 +104,6 @@ if ctx.audio_processor:
         else:
             status.markdown("⏳ Listening...")
 
-        # Waveform visualization
         if waveform is not None:
             fig, ax = plt.subplots(figsize=(6, 2))
             ax.plot(waveform)
@@ -107,7 +112,6 @@ if ctx.audio_processor:
             ax.set_ylabel("Amplitude")
             waveform_box.pyplot(fig)
 
-        # MFCC visualization
         if mfcc is not None:
             fig2, ax2 = plt.subplots(figsize=(6, 3))
             librosa.display.specshow(mfcc, x_axis='time', ax=ax2, sr=44100)
