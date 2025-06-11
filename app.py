@@ -7,153 +7,105 @@ import av
 import matplotlib.pyplot as plt
 import librosa.display
 from collections import deque
-import threading
 
-# ----- PAGE CONFIG -----
 st.set_page_config(layout="centered")
-st.title("🎙️ Real-Time Gender Detection")
+st.title("🎙️ In-Browser Gender Detection")
 
-# ----- KMEANS SAMPLE TRAINING -----
-sample_features = [
-    [110] + list(np.random.normal(0, 1, 13)),
-    [120] + list(np.random.normal(0, 1, 13)),
-    [125] + list(np.random.normal(0, 1, 13)),
-    [210] + list(np.random.normal(0, 1, 13)),
-    [220] + list(np.random.normal(0, 1, 13)),
-    [230] + list(np.random.normal(0, 1, 13)),
+# — KMeans on dummy pitch+MFCC data
+sample_feats = [
+    [110] + list(np.random.randn(13)),
+    [120] + list(np.random.randn(13)),
+    [125] + list(np.random.randn(13)),
+    [210] + list(np.random.randn(13)),
+    [220] + list(np.random.randn(13)),
+    [230] + list(np.random.randn(13)),
 ]
-kmeans = KMeans(n_clusters=2, random_state=0).fit(sample_features)
-center_pitches = [c[0] for c in kmeans.cluster_centers_]
-male_label = np.argmin(center_pitches)
+kmeans = KMeans(n_clusters=2, random_state=0).fit(sample_feats)
+centers = [c[0] for c in kmeans.cluster_centers_]
+male_label = int(np.argmin(centers))
 
-# ----- HISTORY STORAGE -----
-past_predictions = deque(maxlen=30)
+# — History
+if "history" not in st.session_state:
+    st.session_state.history = deque(maxlen=30)
+# track STOP event
+if "was_playing" not in st.session_state:
+    st.session_state.was_playing = False
 
-# ----- FEATURE EXTRACTION -----
-def extract_pitch(signal, sr):
-    autocorr = np.correlate(signal, signal, mode='full')
-    autocorr = autocorr[len(autocorr)//2:]
-    d = np.diff(autocorr)
-    try:
-        start = np.nonzero(d > 0)[0][0]
-        peak = np.argmax(autocorr[start:]) + start
-        return sr / peak
-    except Exception:
+def extract_pitch(y, sr):
+    autoc = np.correlate(y, y, mode="full")[len(y):]
+    d = np.diff(autoc)
+    idx = np.where(d>0)[0]
+    if not len(idx):
         return 0
+    peak = np.argmax(autoc[idx[0]:]) + idx[0]
+    return sr/peak if peak>0 else 0
 
-def extract_features(audio_np, sr):
-    pitch = extract_pitch(audio_np, sr)
-    mfcc = librosa.feature.mfcc(y=audio_np, sr=sr, n_mfcc=13)
-    mfcc_mean = np.mean(mfcc, axis=1)
-    return np.hstack(([pitch], mfcc_mean)), pitch, mfcc
+def extract_features(y, sr):
+    pitch = extract_pitch(y, sr)
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+    return np.hstack(([pitch], np.mean(mfcc, axis=1))), pitch, mfcc
 
-# ----- AUDIO PROCESSOR -----
-class AudioProcessor:
+class AudioRecorder:
     def __init__(self):
-        self.result = None
-        self.waveform = None
-        self.pitch = 0
-        self.mfcc = None
-        self.energy = 0
+        self.buffer = []  # collect numpy arrays
 
     def recv(self, frame: av.AudioFrame):
-        samples = frame.to_ndarray().flatten().astype(np.float32) / 32768.0
-        sr = frame.sample_rate
-        self.energy = np.mean(samples**2)
-        self.waveform = samples
-
-        if len(samples) > sr // 2:
-            try:
-                features, pitch, mfcc = extract_features(samples, sr)
-                self.pitch = pitch
-                self.mfcc = mfcc
-
-                if pitch > 50:
-                    label = kmeans.predict(features.reshape(1, -1))[0]
-                    gender = "Male" if label == male_label else "Female"
-                else:
-                    gender = "Silent/Unclear"
-
-                self.result = (gender, pitch)
-            except Exception as e:
-                self.result = ("Error", 0)
-
+        arr = frame.to_ndarray().flatten().astype(np.float32)/32768.0
+        self.buffer.append(arr)
         return frame
 
-# ----- WEBRTC STREAM -----
-ctx = webrtc_streamer(
-    key="gender-detector",
+# start/stop recorder
+rec_ctx = webrtc_streamer(
+    key="recorder",
     mode=WebRtcMode.SENDONLY,
-    audio_processor_factory=AudioProcessor,
+    audio_processor_factory=AudioRecorder,
     media_stream_constraints={"audio": True, "video": False},
 )
 
-# ----- DISPLAY PLACEHOLDERS -----
+# placeholders
 status = st.empty()
-gender_box = st.empty()
-pitch_box = st.empty()
-energy_box = st.empty()
 waveform_box = st.empty()
 mfcc_box = st.empty()
-chart_box = st.empty()
+result_box = st.empty()
+history_box = st.empty()
 
-# ----- MAIN LOOP -----
-if ctx.audio_processor:
-    result = ctx.audio_processor.result
-    waveform = ctx.audio_processor.waveform
-    mfcc = ctx.audio_processor.mfcc
-    pitch = ctx.audio_processor.pitch
-    energy = ctx.audio_processor.energy
-
-    energy_box.markdown(f"**🎚️ Mic Energy Level:** `{energy:.6f}`")
-
-    if result:
-        gender, pitch = result
-        pitch_box.markdown(f"**Pitch:** `{pitch:.2f} Hz`")
-
-        if gender == "Silent/Unclear":
-            gender_box.warning("🎤 Speak louder or closer to the mic...")
-        elif gender == "Error":
-            gender_box.error("⚠️ Error during prediction.")
+# detect STOP
+if rec_ctx.audio_processor:
+    playing = rec_ctx.state.playing
+    # just stopped
+    if st.session_state.was_playing and not playing:
+        status.info("▶ Processing recording…")
+        buf = np.concatenate(rec_ctx.audio_processor.buffer) if rec_ctx.audio_processor.buffer else np.array([])
+        rec_ctx.audio_processor.buffer.clear()
+        if buf.size and buf.shape[0]>1000:
+            # process
+            sr = rec_ctx.audio_receiver._config.media_stream_constraints["audio"]["sampleRate"] if False else 44100
+            # librosa load expects file; we use default sr
+            features, pitch, mfcc = extract_features(buf, sr)
+            label = kmeans.predict([features])[0]
+            gender = "Male" if label==male_label else "Female"
+            st.session_state.history.append(gender)
+            # display
+            result_box.success(f"🧑 Predicted Gender: **{gender}** — 🎵 Pitch: **{pitch:.1f} Hz**")
+            # waveform
+            fig1,ax1=plt.subplots(figsize=(6,2))
+            ax1.plot(buf); ax1.set(title="Waveform",xlabel="Sample",ylabel="Amplitude")
+            waveform_box.pyplot(fig1)
+            # MFCC
+            fig2,ax2=plt.subplots(figsize=(6,3))
+            librosa.display.specshow(mfcc, sr=sr, x_axis="time", ax=ax2)
+            ax2.set(title="MFCCs")
+            mfcc_box.pyplot(fig2)
         else:
-            gender_box.success(f"🧑 Predicted Gender: **{gender}**")
-            past_predictions.append(gender)
-    else:
-        gender_box.info("⏳ Listening... Please speak.")
+            result_box.warning("⚠️ Recording too short or silent.")
+        status.empty()
+    st.session_state.was_playing = playing
 
-    # Waveform display
-    if waveform is not None:
-        fig1, ax1 = plt.subplots(figsize=(6, 2))
-        ax1.plot(waveform)
-        ax1.set_title("Waveform")
-        ax1.set_xlabel("Time")
-        ax1.set_ylabel("Amplitude")
-        waveform_box.pyplot(fig1)
-
-    # MFCC display
-    if mfcc is not None:
-        fig2, ax2 = plt.subplots(figsize=(6, 3))
-        librosa.display.specshow(mfcc, sr=44100, x_axis='time', ax=ax2)
-        ax2.set_title("MFCCs")
-        mfcc_box.pyplot(fig2)
-
-    # Gender prediction bar chart
-    male_count = sum(1 for g in past_predictions if g == "Male")
-    female_count = sum(1 for g in past_predictions if g == "Female")
-    unclear_count = sum(1 for g in past_predictions if g == "Silent/Unclear")
-
-    fig3, ax3 = plt.subplots()
-    ax3.bar(["Male", "Female", "Unclear"], [male_count, female_count, unclear_count],
-            color=['blue', 'pink', 'gray'])
-    ax3.set_ylim(0, 30)
-    ax3.set_ylabel("Count (last 30 samples)")
-    ax3.set_title("Gender Prediction History")
-    chart_box.pyplot(fig3)
-
-# ----- AUTO-REFRESH LOOP -----
-def trigger_refresh():
-    st.experimental_rerun()
-
-if "timer_running" not in st.session_state:
-    st.session_state["timer_running"] = True
-    threading.Timer(1.0, trigger_refresh).start()
+# history chart
+hist = list(st.session_state.history)
+counts = [hist.count("Male"), hist.count("Female"), hist.count("Silent/Unclear")]
+fig3,ax3=plt.subplots()
+ax3.bar(["Male","Female","Silent"], counts, color=["blue","pink","gray"])
+ax3.set_ylim(0,30)
+ax3.set(title="Last 30 Predictions",ylabel="Count")
+history_box.pyplot(fig3)
