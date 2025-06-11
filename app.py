@@ -112,7 +112,7 @@ if ctx.audio_processor:
         else:
             gender_box.success(f"🧑 Predicted Gender: **{gender}**")
 
-past_predictions.append(gender)
+            past_predictions.append(gender)
 
         else:
             gender_box.info("⏳ Listening... Please speak.")
