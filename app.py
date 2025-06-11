@@ -7,15 +7,12 @@ import av
 import matplotlib.pyplot as plt
 import librosa.display
 from collections import deque
-import soundfile as sf
 
 # --- Page config ---
 st.set_page_config(layout="centered")
 st.title("🎙️ In-Browser Gender Detection with Manual Control")
 
 # --- Initialize session state ---
-if 'buffer' not in st.session_state:
-    st.session_state.buffer = []
 if 'is_recording' not in st.session_state:
     st.session_state.is_recording = False
 if 'history' not in st.session_state:
@@ -40,19 +37,17 @@ kmeans = KMeans(n_clusters=2, random_state=0).fit(sample_feats)
 centers = [c[0] for c in kmeans.cluster_centers_]
 male_label = int(np.argmin(centers))
 
-# --- Feature extraction functions ---
-def extract_pitch(signal, sr):
-    autoc = np.correlate(signal, signal, mode='full')[len(signal):]
+# --- Feature extraction ---
+def extract_pitch(y, sr):
+    autoc = np.correlate(y, y, mode='full')[len(y):]
     d = np.diff(autoc)
     idx = np.where(d > 0)[0]
-    if not len(idx):
-        return 0
+    if not len(idx): return 0
     peak = np.argmax(autoc[idx[0]:]) + idx[0]
-    return sr/peak if peak > 0 else 0
+    return sr/peak if peak>0 else 0
 
-
-def extract_mfcc(signal, sr):
-    return librosa.feature.mfcc(y=signal, sr=sr, n_mfcc=13)
+def extract_mfcc(y, sr):
+    return librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
 
 # --- Audio processor collecting frames ---
 class AudioRecorder:
@@ -76,15 +71,23 @@ ctx = webrtc_streamer(
 col1, col2 = st.columns(2)
 with col1:
     if not st.session_state.is_recording and st.button("Start Recording"):
-        st.session_state.buffer = []
         st.session_state.is_recording = True
         st.session_state.last_result = None
+        if ctx.audio_processor:
+            ctx.audio_processor.buffer.clear()
 with col2:
     if st.session_state.is_recording and st.button("Stop & Analyze"):
         st.session_state.is_recording = False
-        # concatenate buffer
-        data = np.concatenate(ctx.audio_processor.buffer) if ctx.audio_processor.buffer else np.array([])
-        ctx.audio_processor.buffer.clear()
+        # Safely retrieve buffer
+        if ctx and ctx.audio_processor and hasattr(ctx.audio_processor, 'buffer'):
+            buf_list = ctx.audio_processor.buffer
+        else:
+            buf_list = []
+        data = np.concatenate(buf_list) if buf_list else np.array([])
+        # Clear buffer
+        if ctx and ctx.audio_processor and hasattr(ctx.audio_processor, 'buffer'):
+            ctx.audio_processor.buffer.clear()
+        # Process
         if data.size > 1000:
             sr = 44100
             pitch = extract_pitch(data, sr)
@@ -97,24 +100,24 @@ with col2:
             st.session_state.last_mfcc = mfcc
             st.session_state.history.append(gender)
         else:
-            st.session_state.last_result = ("Too short", 0)
+            st.session_state.last_result = ("Too short or no audio", 0)
 
 # --- Display results ---
 if st.session_state.last_result:
     gender, pitch = st.session_state.last_result
-    if gender in ["Male","Female"]:
+    if gender in ["Male", "Female"]:
         st.success(f"🧑 Predicted Gender: **{gender}** — 🎵 Pitch: **{pitch:.1f} Hz**")
     else:
         st.warning(gender)
-
+    # Waveform
     if st.session_state.last_waveform is not None:
-        fig1, ax1 = plt.subplots(figsize=(6,2))
+        fig1, ax1 = plt.subplots(figsize=(6, 2))
         ax1.plot(st.session_state.last_waveform)
         ax1.set(title="Waveform", xlabel="Sample", ylabel="Amplitude")
         st.pyplot(fig1)
-
+    # MFCC
     if st.session_state.last_mfcc is not None:
-        fig2, ax2 = plt.subplots(figsize=(6,3))
+        fig2, ax2 = plt.subplots(figsize=(6, 3))
         librosa.display.specshow(st.session_state.last_mfcc, sr=sr, x_axis='time', ax=ax2)
         ax2.set(title="MFCCs")
         st.pyplot(fig2)
@@ -123,9 +126,10 @@ if st.session_state.last_result:
 hist = list(st.session_state.history)
 male_count = hist.count("Male")
 female_count = hist.count("Female")
-unclear_count = hist.count("Too short")
+unclear_count = hist.count("Too short or no audio")
 fig3, ax3 = plt.subplots()
-ax3.bar(["Male","Female","Too short"], [male_count, female_count, unclear_count], color=["blue","pink","gray"])
-ax3.set_ylim(0,30)
+ax3.bar(["Male", "Female", "No Audio"], [male_count, female_count, unclear_count],
+        color=["blue", "pink", "gray"])
+ax3.set_ylim(0, 30)
 ax3.set(title="Prediction History (last 30)", ylabel="Count")
 st.pyplot(fig3)
